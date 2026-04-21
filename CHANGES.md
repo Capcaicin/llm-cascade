@@ -288,3 +288,25 @@ changing the hash here only re-locks the dashboard gate.
 
 Zero new dependencies. A future swap to `prometheus_client` is a
 drop-in — the exposition format is already compatible.
+
+### 2026-04-20 — Prompt drift: auto-refine templates promoted to core.prompts
+
+- `core/prompts.py`: added `EXTERNAL_CRITIC_SYSTEM`,
+  `EXTERNAL_CRITIC_PROMPT`, and `REFINE_USER_PROMPT` — the exact
+  templates `router_server._external_critique` and `_refine_payload`
+  had been holding inline. Same shape as the existing SORTER/THINKER
+  pair: one short system string plus one `.format()`-able user
+  template.
+- `src/router_server.py`: imports the three new names and formats
+  them in place of the inline strings. The `router-sub-critic` alias's
+  `system_prepend` (if set) still takes precedence over the default
+  critic persona — operators can still tune wording without touching
+  core.
+- Why it matters: every surface that ever wants to run a critic pass
+  (dashboard, a future supervisor, a CLI helper) now reads the same
+  wording. Drift between CLI and router is exactly what core/prompts
+  exists to prevent.
+
+No behavior change on well-lit paths — the rendered strings are
+byte-identical to what router_server was sending before, minus the
+whitespace differences the new `.format()` templates normalize.

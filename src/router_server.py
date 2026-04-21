@@ -176,7 +176,15 @@ from core.auth import _auth_anything, _auth_browser
 from core.http import _ollama_post, _ollama_stream, _alm_request
 from core import telemetry
 from core.memory import ensure_memory_workspace, remember_async, memory_recall
-from core.prompts import SUBAGENTS, resolve_subagent, THINKER_SYSTEM, CLASSIFIER_SYSTEM
+from core.prompts import (
+    SUBAGENTS,
+    resolve_subagent,
+    THINKER_SYSTEM,
+    CLASSIFIER_SYSTEM,
+    EXTERNAL_CRITIC_SYSTEM,
+    EXTERNAL_CRITIC_PROMPT,
+    REFINE_USER_PROMPT,
+)
 from core.two_pass import two_pass_generate, two_pass_stream
 from core.utils import _extract_json
 
@@ -657,17 +665,11 @@ def _external_critique(query: str, draft: str) -> str:
         return ""
     sub = SUBAGENTS.get("router-sub-critic") or {}
     critic_model = sub.get("model") or FAST_CRITIC_MODEL
-    persona = sub.get("system_prepend") or (
-        "You are the CRITIC. Review the draft and list concrete issues as "
-        "bullets. Do not rewrite — just critique."
-    )
-    user_msg = (
-        f"=== ORIGINAL QUERY ===\n{query}\n\n"
-        f"=== DRAFT ANSWER ===\n{draft}\n\n"
-        "List concrete issues with the draft: factual errors, missing edge "
-        "cases, hallucinated details, weak reasoning, unclear phrasing, broken "
-        "structure. Bullet points only — no preamble, no rewrite."
-    )
+    # Prefer the subagent's system_prepend if one is set (lets operators
+    # tune tone without touching the default). Fall back to the canonical
+    # template in core.prompts.
+    persona = sub.get("system_prepend") or EXTERNAL_CRITIC_SYSTEM
+    user_msg = EXTERNAL_CRITIC_PROMPT.format(query=query, draft=draft)
     try:
         r = _ollama_post({
             "model": critic_model,
@@ -689,13 +691,7 @@ def _refine_payload(base_messages: list[dict], draft: str, critique: str,
     final user turn. Temperature dropped to 0.3 to tighten the rewrite."""
     refine_msgs = list(base_messages) + [
         {"role": "assistant", "content": draft},
-        {"role": "user", "content": (
-            "A reviewer listed these issues with your draft:\n\n"
-            f"{critique}\n\n"
-            "Rewrite your answer addressing every issue. Keep everything the "
-            "draft got right, tighten everything it got loose. "
-            "Output only the improved answer — no meta commentary, no change log."
-        )},
+        {"role": "user", "content": REFINE_USER_PROMPT.format(critique=critique)},
     ]
     refined_opts = dict(options or {})
     refined_opts["temperature"] = 0.3

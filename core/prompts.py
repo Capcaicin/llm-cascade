@@ -246,6 +246,44 @@ SUBAGENTS: dict[str, dict] = {
 TWO_PASS_ALIASES = {k for k, v in SUBAGENTS.items() if v.get("two_pass")}
 
 
+# ─── Auto-refine (external-critic) prompts ──────────────────────────────────
+# Used by router_server's auto-refine path, which differs from two_pass in
+# that it uses an EXTERNAL model (router-sub-critic / mistral) for the
+# critique, then hands the critique back to the original 35b for rewrite.
+# The externalized reviewer catches blind spots a self-critic misses.
+#
+# These live here (not in two_pass.py) because:
+#   1) They're short system + user templates — same shape as SORTER/THINKER.
+#   2) Centralization is what keeps UI, CLI, and router behaviors aligned —
+#      moving the critic template into core.prompts means any surface that
+#      wants to run a critic pass reads the same wording.
+
+EXTERNAL_CRITIC_SYSTEM = (
+    "You are the CRITIC. Review the draft and list concrete issues as "
+    "bullets. Do not rewrite — just critique."
+)
+
+EXTERNAL_CRITIC_PROMPT = """\
+=== ORIGINAL QUERY ===
+{query}
+
+=== DRAFT ANSWER ===
+{draft}
+
+List concrete issues with the draft: factual errors, missing edge cases, \
+hallucinated details, weak reasoning, unclear phrasing, broken structure. \
+Bullet points only — no preamble, no rewrite."""
+
+REFINE_USER_PROMPT = """\
+A reviewer listed these issues with your draft:
+
+{critique}
+
+Rewrite your answer addressing every issue. Keep everything the draft got \
+right, tighten everything it got loose. Output only the improved answer — \
+no meta commentary, no change log."""
+
+
 # ─── GPU option defaults ──────────────────────────────────────────────────────
 GPU_OPTIONS_SMALL = {"num_gpu": 99, "num_thread": 6, "temperature": 0.2, "num_ctx": 16384}
 GPU_OPTIONS_BIG = {"num_gpu": 99, "num_thread": 8, "temperature": 0.75, "num_ctx": 32768, "repeat_penalty": 1.1}
