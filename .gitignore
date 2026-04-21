@@ -1,0 +1,28 @@
+# secrets
+.env
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+dist/
+build/
+
+# project artifacts
+bin/
+*.log
+*.bak
+.waylog/
+.changes/snapshots/
+
+# session/memory files (machine-local state)
+sessions/
+*.session.json
+
+# editor
+.vscode/
+.idea/
+*.swp
+.DS_Store

@@ -1,0 +1,101 @@
+# AI STACK — containerized
+#
+# Services:
+#   ollama       — local LLM runtime (GPU if available)
+#   router       — FastAPI router_server on 3839 (OpenAI-compat)
+#   streamlit    — dashboard UI on 8501 (routes through `router`)
+#
+# AnythingLLM stays on the host (Windows desktop app) for now because its
+# workspace data already lives there and the desktop build is the path of
+# least resistance. To containerize it later, replace `ANYTHINGLLM_BASE_URL`
+# with `http://anythingllm:3001` and add an `anythingllm` service below.
+#
+# Usage:
+#   cp .env.example .env && edit .env
+#   docker compose up -d
+#   # First run: pull the abliterated models
+#   docker compose exec ollama ollama pull huihui_ai/qwen3.5-abliterated:4b
+#   docker compose exec ollama ollama pull huihui_ai/qwen3.5-abliterated:35b
+#   docker compose exec ollama ollama pull llama3.1:8b
+#   docker compose exec ollama ollama pull mistral:latest
+#   docker compose exec ollama ollama pull qwen2.5-coder:14b
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ai-stack-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    environment:
+      OLLAMA_KEEP_ALIVE: "30m"
+    # GPU passthrough — requires nvidia-container-toolkit (Linux) or Docker
+    # Desktop WSL2 GPU (Windows). Comment out if running CPU-only.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  router:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-stack-router
+    restart: unless-stopped
+    depends_on:
+      - ollama
+    ports:
+      - "3839:3839"
+    environment:
+      OLLAMA_BASE_URL: "http://ollama:11434"
+      # AnythingLLM runs on the host; host.docker.internal works on Docker
+      # Desktop (Mac/Windows). On Linux you'll need to set this to the host
+      # bridge IP or run AnythingLLM in its own container.
+      ANYTHINGLLM_BASE_URL: "${ANYTHINGLLM_BASE_URL:-http://host.docker.internal:3001}"
+      ANYTHINGLLM_API_KEY: "${ANYTHINGLLM_API_KEY:-}"
+      OLLAMA_API_KEY: "${OLLAMA_API_KEY:-}"
+      ROUTER_SMALL_MODEL: "${ROUTER_SMALL_MODEL:-huihui_ai/qwen3.5-abliterated:4b}"
+      ROUTER_BIG_MODEL: "${ROUTER_BIG_MODEL:-huihui_ai/qwen3.5-abliterated:35b}"
+      ROUTER_FAST_DRAFT_MODEL: "${ROUTER_FAST_DRAFT_MODEL:-llama3.1:8b}"
+      ROUTER_FAST_CRITIC_MODEL: "${ROUTER_FAST_CRITIC_MODEL:-mistral:latest}"
+      ROUTER_FAST_CODER_MODEL: "${ROUTER_FAST_CODER_MODEL:-qwen2.5-coder:14b}"
+    command: ["python", "src/router_server.py"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-stack-streamlit
+    restart: unless-stopped
+    depends_on:
+      - router
+    ports:
+      - "8501:8501"
+    environment:
+      OLLAMA_BASE_URL: "http://ollama:11434"
+      ANYTHINGLLM_BASE_URL: "${ANYTHINGLLM_BASE_URL:-http://host.docker.internal:3001}"
+      ANYTHINGLLM_API_KEY: "${ANYTHINGLLM_API_KEY:-}"
+      OLLAMA_API_KEY: "${OLLAMA_API_KEY:-}"
+      ROUTER_SERVER_URL: "http://router:3839"
+    command:
+      - python
+      - -m
+      - streamlit
+      - run
+      - src/dashboard.py
+      - --server.headless=true
+      - --server.port=8501
+      - --server.address=0.0.0.0
+      - --browser.gatherUsageStats=false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  ollama-models:
