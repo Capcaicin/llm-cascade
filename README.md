@@ -1,154 +1,180 @@
-# ⚡ AI Router — Production Two-Tier Local LLM Orchestrator
+# llm-cascade
 
-**Intelligent routing • Multi-workspace RAG • OpenAI-compatible API • Persistent semantic memory • Subagents • Clarity Engine**
+![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange)
+![License](https://img.shields.io/badge/License-MIT-blue)
+![Status](https://img.shields.io/badge/Status-Active-success)
 
-Because sometimes a 4B model just needs to decide whether the problem actually deserves the 35B model.
+**Resilient LLM routing with failover, cooldowns, and persistence.**
 
-A complete **local AI sovereignty stack** built for engineers who want maximum intelligence with zero cloud dependency, token costs, or context loss.
-
-## Why This Stack Matters
-
-This isn't another toy local LLM wrapper. It's a **production-grade orchestration layer** demonstrating:
-
-- Hierarchical LLM routing & task classification
-- Multi-agent subagent architecture
-- Cross-workspace RAG at scale
-- Persistent semantic memory across sessions
-- Full OpenAI compatibility for seamless integration
-- Real-world desktop agent capabilities
-
-Built and battle-tested daily in Sanford, Florida on consumer hardware (RTX 4070 Super).
-
-## ✨ Key Features
-
-- **Smart Two-Tier Routing** — 4B sorter analyzes query + RAG + history and either answers directly or writes a precise mission brief for the 35B thinker
-- **Two-Pass Refinement** — `router-two-pass` drafts with the 35B, then runs a critic pass that rewrites it into a stronger final answer (temperature=0 on pass 2). Optional red-team prepend for authorized pentest work.
-- **AnythingLLM RAG** — 10 specialized workspaces with automatic URL-based switching and browser extension capture
-- **Persistent Semantic Memory** — Every conversation turn is summarized and stored for lifelong context recall
-- **Clarity Engine Integration** — Live priority-tree state injection in `router-assistant` mode
-- **Subagent Framework** — `router-fast`, `router-sub-coder`, `router-sub-critic`, `router-sub-draft`, `router-sub-research`
-- **OpenAI-Compatible Server** — Full `/v1/chat/completions` endpoint (works with OpenClaw, LangChain, CrewAI, etc.)
-- **Streamlit Dashboard** + compiled Windows exes + Docker Compose support
-- **Desktop Control Primitives** — Agents can control mouse, keyboard, screenshots, windows, and clipboard
-
-## 🚀 Quick Start (Windows)
-
-```powershell
-# From project root
-.\invoke.ps1 -Check          # Full boot health check
-.\invoke.ps1 -Serve          # Start Router API on http://localhost:3839
-.\invoke.ps1 -Dashboard      # Launch Streamlit UI on http://localhost:8501
-```
-
-Or double-click the desktop shortcuts:
-
-- **AI Router** — starts the full server + boot checklist
-- **AI Dashboard** — launches the Streamlit UI
-
-CLI mode: `.\invoke.ps1`
-
-## 📡 Services
-
-| Service              | Port  | Purpose                                       |
-|----------------------|-------|-----------------------------------------------|
-| Router API           | 3839  | OpenAI-compatible `/v1/chat/completions` · `/metrics` (Prom) |
-| Streamlit Dashboard  | 8501  | Rich web chat interface                       |
-| Ollama               | 11434 | Local inference (4B sorter + 35B thinker)     |
-| AnythingLLM          | 3001  | Multi-workspace RAG engine                    |
-| OpenClaw Gateway     | 18789 | Discord + tool-calling bridge                 |
-| Clarity Engine       | 3747  | Typed priority tree (assistant mode)          |
-
-## 🔀 Model Aliases
-
-| Alias                          | Behavior                                               |
-|--------------------------------|--------------------------------------------------------|
-| `router`                       | Default intelligent two-tier routing (recommended)     |
-| `router-assistant`             | 35B + cross-workspace RAG + Clarity Engine             |
-| `router-fast`                  | Speed-first (safe tasks → free models)                 |
-| `router-sub-coder`             | Code generation specialist                             |
-| `router-sub-critic`            | Output reviewer                                        |
-| `router-sub-research`          | Deep research synthesizer                              |
-| `router-two-pass`              | Draft + critic refinement (high-quality)               |
-| `router-two-pass-uncensored`   | Same + red-team prepend (authorized pentest)           |
-
-## Architecture
-
-```mermaid
-graph TD
-    A[User / OpenClaw / Dashboard] --> B[Router Server :3839]
-    B --> C[4B Sorter + Classifier]
-    C -->|Simple / Safe| D[Direct 4B Answer]
-    C -->|Complex| E[35B Thinker]
-    E --> F[AnythingLLM RAG + Cross-Workspace]
-    E --> G[Persistent Memory Recall]
-    E --> H[Clarity Engine State]
-    F & G & H --> E
-    style B fill:#1a2a4a,stroke:#4f8ef7,stroke-width:3px
-```
-
-## Workspaces (AnythingLLM)
-
-10 specialized RAG workspaces with automatic URL-pattern switching:
-
-`assistant` • `tim` • `tcg-dot-bot` • `movie_poster` • `projects` • `pen-test` • `substances` • `journal` • `ideas` • `private`
-
-## CLI Commands
-
-Inside the CLI router type `/help` for the full list:
-
-- `/workspace` & `/workspace <slug>` — switch workspace
-- `/project <name>` — switch project (auto-maps workspace)
-- `/capture` — grab current browser page and embed it
-- `/rag-add <title> | <text>` — add text to current workspace
-- `/rag-file <path>` — upload and embed a file
-- `/export` — save conversation as markdown
-- `/history` • `/clear` • `/models` • `/status` • `/workspace-list` • `/projects`
-
-## File Layout
-
-```
-AI STACK/
-├── bin/                     ← Compiled .exe files
-│   ├── AI Router.exe
-│   └── AI Router CLI.exe
-├── src/                     ← Source code
-│   ├── router_server.py
-│   ├── ai_router_v2.py
-│   └── dashboard.py
-├── core/                    ← Shared modular package (prompts, session, RAG, memory, two-pass)
-├── launch_*.bat             ← One-click launchers
-├── invoke.ps1               ← PowerShell Swiss Army knife
-├── desktop.ps1              ← Desktop control primitives for agents
-├── docker-compose.yml       ← Containerized deployment
-├── README.md                ← You are here
-├── USER_MANUAL.md           ← Full alias reference, two-pass explainer, troubleshooting
-└── SETUP.md                 ← Detailed setup
-```
-
-## Rebuilding Executables
-
-```powershell
-python -m PyInstaller --onefile --name "AI Router" --icon router.ico --distpath bin src/router_server.py
-python -m PyInstaller --onefile --name "AI Router CLI" --icon router.ico --distpath bin src/ai_router_v2.py
-```
-
-## Docker Support
-
-```bash
-docker compose up -d
-```
-
-## Tech Stack
-
-- **Core:** Python 3.12 + FastAPI + Uvicorn
-- **LLMs:** Ollama (Qwen3.5-abliterated 4B/35B + fast free models)
-- **RAG:** AnythingLLM (10 workspaces)
-- **UI:** Streamlit + custom CSS
-- **Memory:** Auto-summarization + vector recall
-- **Deployment:** Compiled Windows exes, Docker Compose, PowerShell automation
+`llm-cascade` is a Rust crate that routes a single request across multiple LLM providers in sequence until one succeeds. It handles failures, tracks provider health, and avoids retrying broken APIs like an optimistic intern.
 
 ---
 
-*Local AI sovereignty, maximized.*
-*Core v0.2.0 — Built with precision in Sanford, Florida.*
-*Made for engineers who want their AI stack to be as sharp as their code.*
+## 🧠 Why this exists
+
+LLM APIs fail. They rate-limit, timeout, hallucinate, or just decide today isn’t their day.
+
+Instead of:
+
+> “hope OpenAI works”
+
+You get:
+
+> “try OpenAI → fallback to Anthropic → fallback to Gemini → fallback to local Ollama”
+
+Automatically.
+
+---
+
+## ✨ Features
+
+* 🔁 **Cascade Execution** — Try multiple providers in order
+* 🚫 **Cooldown System** — Skip providers that recently failed
+* 🧠 **Failure Tracking** — Persistent attempt logs in SQLite
+* 🔐 **Secure Secrets** — OS keyring + env fallback
+* ⚙️ **TOML Config** — Simple, explicit control over behavior
+* 💾 **Persistence** — Failed conversations saved for debugging
+
+---
+
+## 📦 Installation
+
+Add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+llm-cascade = "*"
+```
+
+(Replace `*` with an actual version when you’re feeling responsible.)
+
+---
+
+## 🚀 Quick Start
+
+```rust
+use llm_cascade::{run_cascade, load_config, db, Conversation};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = load_config(&"config.toml".into())?;
+    let conn = db::init_db(&config.database.path)?;
+
+    let conversation = Conversation::single_user_prompt("Explain recursion simply");
+
+    match run_cascade("default", &conversation, &config, &conn).await {
+        Ok(response) => println!("{}", response.text_only()),
+        Err(e) => eprintln!("All providers failed: {e}"),
+    }
+
+    Ok(())
+}
+```
+
+---
+
+## ⚙️ Configuration
+
+Everything is controlled via `config.toml`.
+
+### Example
+
+```toml
+[database]
+path = "~/.llm-cascade/state.sqlite"
+
+[failures]
+cooldown_seconds = 300
+max_failures = 3
+
+[[cascades]]
+name = "default"
+providers = [
+  { type = "openai", model = "gpt-4o-mini" },
+  { type = "anthropic", model = "claude-3-5-sonnet-latest" },
+  { type = "gemini", model = "gemini-2.0-flash" },
+  { type = "ollama", model = "llama3.1" }
+]
+```
+
+### How it works
+
+1. Providers are tried **top to bottom**
+2. Failures are recorded
+3. Providers exceeding `max_failures` enter cooldown
+4. Cooldown expires → provider re-enters rotation
+5. First success wins
+
+No overthinking. Just reliability.
+
+---
+
+## 🔌 Supported Providers
+
+* OpenAI
+* Anthropic
+* Gemini
+* Ollama (local)
+
+Mix cloud + local like a rational person who doesn’t trust any single vendor.
+
+---
+
+## 🧩 Project Structure
+
+```
+src/
+├── cascade/        # Execution engine
+├── config/         # Config parsing + types
+├── db/             # SQLite state + logs
+├── providers/      # API integrations
+├── models/         # Messages, responses, roles
+├── persistence/    # Save failed conversations
+├── secrets/        # API key handling
+└── error/          # Error types
+```
+
+---
+
+## 🧪 Testing
+
+```bash
+cargo test
+```
+
+---
+
+## 💡 Use Cases
+
+* Reliable production chat systems
+* Cheap-first → expensive fallback routing
+* Rate-limit resilience
+* Local-first setups with cloud backup
+
+---
+
+## ⚠️ Philosophy
+
+This is **not** an agent framework.
+
+It doesn’t:
+
+* plan tasks
+* spawn agents
+* pretend to be sentient
+
+It does one job:
+
+> make LLM calls more reliable
+
+And it does it without turning your codebase into a personality disorder.
+
+---
+
+## 📄 License
+
+MIT
+
+---
+
+Built for people who are tired of their AI stack failing silently and calling it "edge cases."
