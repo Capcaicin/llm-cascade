@@ -261,3 +261,30 @@ Security hardening:
 
 The secret must still be rotated in the AnythingLLM workspace itself —
 changing the hash here only re-locks the dashboard gate.
+
+### 2026-04-20 — Telemetry floor (zero-dep, Prometheus + JSON)
+
+- `core/telemetry.py` (new): stdlib-only metrics store — `Counter`,
+  `Gauge`, `Histogram` with labels, a thread-safe global registry, and
+  renderers for Prometheus text (`prometheus_text()`) and a JSON mirror
+  (`snapshot_json()`). A dedicated `ai_stack.telemetry` logger emits
+  one JSON line per completed request.
+- `src/router_server.py`: every `/chat/completions` dispatch path
+  (normal stream/non-stream, auto-refine stream/non-stream, two-pass
+  stream/non-stream, tools non-stream) calls `_record_completion()`,
+  which updates `router_requests_total`, `router_request_seconds`
+  (histogram), `router_output_chars_total`, `router_output_chars_per_second`
+  (gauge), and writes the structured request log. Specific gates bump
+  `router_auto_refine_triggered_total`, `router_two_pass_triggered_total`,
+  and the rate-limit middleware bumps `router_rate_limited_total`.
+  Upstream 502s bump `router_upstream_errors_total` and record an
+  `outcome=error` completion.
+- `src/router_server.py`: new endpoints `GET /metrics` (Prometheus
+  text, `text/plain; version=0.0.4`) and `GET /metrics.json` (labels
+  expanded, buckets materialized).
+- Boot check: new "telemetry" row in the Security & refinement panel
+  pointing at the endpoints.
+- `README.md`: services row updated to note `/metrics`.
+
+Zero new dependencies. A future swap to `prometheus_client` is a
+drop-in — the exposition format is already compatible.

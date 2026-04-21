@@ -51,7 +51,7 @@ CLI mode: `.\invoke.ps1`
 
 | Service              | Port  | Purpose                                       |
 |----------------------|-------|-----------------------------------------------|
-| Router API           | 3839  | OpenAI-compatible `/v1/chat/completions`      |
+| Router API           | 3839  | OpenAI-compatible `/v1/chat/completions` · `/metrics` (Prom) |
 | Streamlit Dashboard  | 8501  | Rich web chat interface                       |
 | Ollama               | 11434 | Local inference (4B sorter + 35B thinker)     |
 | AnythingLLM          | 3001  | Multi-workspace RAG engine                    |

@@ -35,7 +35,7 @@ except Exception:
     pass
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, ConfigDict
@@ -174,6 +174,7 @@ def _kill_port(port: int) -> bool:
 from core import __version__ as CORE_VERSION
 from core.auth import _auth_anything, _auth_browser
 from core.http import _ollama_post, _ollama_stream, _alm_request
+from core import telemetry
 from core.memory import ensure_memory_workspace, remember_async, memory_recall
 from core.prompts import SUBAGENTS, resolve_subagent, THINKER_SYSTEM, CLASSIFIER_SYSTEM
 from core.two_pass import two_pass_generate, two_pass_stream
@@ -452,6 +453,11 @@ def ensure_services():
     except Exception:
         _print_row("  • keyring", _c(DIM, "–  unavailable"),
                    "pip install keyring  (env vars still work)")
+
+    # Telemetry — always on, in-process, zero-dep.
+    _print_row("  • telemetry",
+               _c(GREEN, "✔  on"),
+               f"GET http://localhost:{ROUTER_SERVER_PORT}/metrics  (prom)  ·  /metrics.json")
 
     # Quick manual — cheat sheet of one-liners for the most common actions
     print()
@@ -819,6 +825,43 @@ def _make_response(content: str, model: str, tool_calls: list | None = None) -> 
     }
 
 
+# ── Telemetry finalizer ──────────────────────────────────────────────────────
+# Called at the end of every /chat/completions dispatch path so counters,
+# histograms, and the structured per-request log stay in sync. `mode` tags the
+# branch (normal / auto_refine / two_pass / tools), so we can answer "which
+# path is eating latency?" at a glance in /metrics.
+def _record_completion(t_start: float, model: str, brief: dict | None,
+                       mode: str, output_text: str,
+                       outcome: str = "ok",
+                       request_id: str | None = None,
+                       remote_ip: str | None = None) -> None:
+    latency = max(0.0, time.time() - t_start)
+    task_type = (brief or {}).get("task_type") or "unknown"
+    route_labels = {"model": model, "task_type": task_type, "mode": mode, "outcome": outcome}
+    mode_labels  = {"model": model, "mode": mode}
+    model_labels = {"model": model}
+    telemetry.REQUESTS.inc(labels=route_labels)
+    telemetry.REQUEST_LATENCY.observe(latency, labels=mode_labels)
+    chars = len(output_text or "")
+    if chars:
+        telemetry.OUTPUT_CHARS.inc(chars, labels=model_labels)
+        if latency > 0.05:
+            telemetry.OUTPUT_CPS.set(chars / latency, labels=model_labels)
+    telemetry.log_request({
+        "ts": round(time.time(), 3),
+        "request_id": request_id,
+        "remote_ip": remote_ip,
+        "model": model,
+        "task_type": task_type,
+        "mode": mode,
+        "outcome": outcome,
+        "latency_s": round(latency, 3),
+        "output_chars": chars,
+        "reason": (brief or {}).get("reason", ""),
+        "complexity": (brief or {}).get("complexity"),
+    })
+
+
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Two-Tier Router", version="1.1.0")
 
@@ -875,6 +918,7 @@ class _RateLimitMiddleware(BaseHTTPMiddleware):
                         q.pop(0)
                     if len(q) >= RATE_LIMIT_PER_MIN:
                         retry_after = max(1, int(q[0] + 60.0 - now))
+                        telemetry.RATE_LIMITED.inc()
                         return JSONResponse(
                             {
                                 "error": "rate_limited",
@@ -905,6 +949,22 @@ def health():
         },
         "aliases": list(SUBAGENTS.keys()),
     }
+
+
+@app.get("/metrics")
+def metrics():
+    # Prometheus text exposition. Scrapers and most dashboards speak this
+    # format natively. For a JSON mirror (Streamlit, ad-hoc curl), see
+    # /metrics.json below.
+    return PlainTextResponse(
+        telemetry.prometheus_text(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
+
+
+@app.get("/metrics.json")
+def metrics_json():
+    return telemetry.snapshot_json()
 
 
 @app.get("/v1/models")
@@ -958,11 +1018,17 @@ def _resolve_route(req_model: str, messages: list[Message], tools: list | None) 
 
 @app.post("/chat/completions")
 @app.post("/v1/chat/completions")
-def chat(req: ChatRequest):
+def chat(req: ChatRequest, request: Request):
     # Pull extras pydantic kept
     extras = req.model_dump()
     tools       = extras.get("tools")
     tool_choice = extras.get("tool_choice")
+
+    # Telemetry bookkeeping. `t_start` drives latency; `request_id` and
+    # `remote_ip` land in the per-request structured log for cross-referencing.
+    t_start    = time.time()
+    request_id = f"req_{uuid.uuid4().hex[:12]}"
+    remote_ip  = (request.client.host if request and request.client else None)
 
     model, brief, spec = _resolve_route(req.model, req.messages, tools)
     assistant_mode = bool(spec and spec.get("assistant_mode"))
@@ -1034,6 +1100,7 @@ def chat(req: ChatRequest):
     # when spec["uncensored"] is True.
     # Cloud-provider aliases fall through to local model today — see prompts.py.
     if spec and spec.get("two_pass") and not tools:
+        telemetry.TWO_PASS.inc(labels={"uncensored": str(bool(spec.get("uncensored"))).lower()})
         uncensored = bool(spec.get("uncensored")) or _looks_sensitive(last_user_text)
         if req.stream:
             def two_pass_event_stream():
@@ -1047,8 +1114,11 @@ def chat(req: ChatRequest):
                     yield _make_chunk(delta, model)
                 yield _make_chunk("", model, finish=True)
                 yield "data: [DONE]\n\n"
+                final_text = "".join(collected)
                 if should_remember:
-                    remember_async(last_user_text, "".join(collected))
+                    remember_async(last_user_text, final_text)
+                _record_completion(t_start, model, brief, "two_pass", final_text,
+                                   request_id=request_id, remote_ip=remote_ip)
             return StreamingResponse(two_pass_event_stream(), media_type="text/event-stream")
         # Non-streaming two-pass
         final = two_pass_generate(
@@ -1057,6 +1127,8 @@ def chat(req: ChatRequest):
         )
         if should_remember and final:
             remember_async(last_user_text, final)
+        _record_completion(t_start, model, brief, "two_pass", final,
+                           request_id=request_id, remote_ip=remote_ip)
         return JSONResponse(_make_response(final, model))
 
     # ── Auto-refinement ──────────────────────────────────────────────────────
@@ -1068,6 +1140,7 @@ def chat(req: ChatRequest):
     # draft + critique are buffered, only the final rewrite streams. Explicit
     # subagent aliases (skip_sorter) are exempted.
     if _auto_refine_eligible(model, spec, brief, tools, is_tool_followup):
+        telemetry.AUTO_REFINE.inc()
         if req.stream:
             def refine_event_stream():
                 collected: list[str] = []
@@ -1083,6 +1156,9 @@ def chat(req: ChatRequest):
                 if not draft:
                     yield _make_chunk("", model, finish=True)
                     yield "data: [DONE]\n\n"
+                    _record_completion(t_start, model, brief, "auto_refine", "",
+                                       outcome="empty_draft",
+                                       request_id=request_id, remote_ip=remote_ip)
                     return
                 critique = _external_critique(last_user_text, draft)
                 if not critique:
@@ -1094,6 +1170,9 @@ def chat(req: ChatRequest):
                     yield "data: [DONE]\n\n"
                     if should_remember:
                         remember_async(last_user_text, draft)
+                    _record_completion(t_start, model, brief, "auto_refine", draft,
+                                       outcome="critic_skipped",
+                                       request_id=request_id, remote_ip=remote_ip)
                     return
                 refine_pl = _refine_payload(ollama_msgs, draft, critique, options)
                 for delta in _ollama_stream(refine_pl):
@@ -1104,6 +1183,8 @@ def chat(req: ChatRequest):
                 final_text = "".join(collected).strip() or draft
                 if should_remember:
                     remember_async(last_user_text, final_text)
+                _record_completion(t_start, model, brief, "auto_refine", final_text,
+                                   request_id=request_id, remote_ip=remote_ip)
             return StreamingResponse(refine_event_stream(), media_type="text/event-stream")
 
         # Non-streaming auto-refine
@@ -1113,11 +1194,18 @@ def chat(req: ChatRequest):
             draft_result = _ollama_post(draft_payload, timeout=240)
             draft = (draft_result.get("message", {}).get("content") or "").strip()
         except Exception as e:
+            telemetry.UPSTREAM_ERRORS.inc(labels={"model": model, "mode": "auto_refine"})
+            _record_completion(t_start, model, brief, "auto_refine", "",
+                               outcome="error",
+                               request_id=request_id, remote_ip=remote_ip)
             raise HTTPException(status_code=502, detail=str(e))
         critique = _external_critique(last_user_text, draft)
         if not critique or not draft:
             if should_remember and draft:
                 remember_async(last_user_text, draft)
+            _record_completion(t_start, model, brief, "auto_refine", draft,
+                               outcome="critic_skipped" if draft else "empty_draft",
+                               request_id=request_id, remote_ip=remote_ip)
             return JSONResponse(_make_response(draft, model))
         try:
             refine_pl = _refine_payload(ollama_msgs, draft, critique, options)
@@ -1128,6 +1216,8 @@ def chat(req: ChatRequest):
             refined = draft
         if should_remember:
             remember_async(last_user_text, refined)
+        _record_completion(t_start, model, brief, "auto_refine", refined,
+                           request_id=request_id, remote_ip=remote_ip)
         return JSONResponse(_make_response(refined, model))
 
     if req.stream and not tools:
@@ -1139,8 +1229,11 @@ def chat(req: ChatRequest):
                 yield _make_chunk(delta, model)
             yield _make_chunk("", model, finish=True)
             yield "data: [DONE]\n\n"
+            final_text = "".join(collected)
             if should_remember:
-                remember_async(last_user_text, "".join(collected))
+                remember_async(last_user_text, final_text)
+            _record_completion(t_start, model, brief, "normal", final_text,
+                               request_id=request_id, remote_ip=remote_ip)
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     try:
@@ -1150,8 +1243,17 @@ def chat(req: ChatRequest):
         tool_calls = msg.get("tool_calls") or None
         if should_remember and content and not tool_calls:
             remember_async(last_user_text, content)
+        mode_label = "tools" if tools else "normal"
+        _record_completion(t_start, model, brief, mode_label, content or "",
+                           request_id=request_id, remote_ip=remote_ip)
         return JSONResponse(_make_response(content, model, tool_calls=tool_calls))
     except Exception as e:
+        telemetry.UPSTREAM_ERRORS.inc(labels={"model": model,
+                                              "mode": "tools" if tools else "normal"})
+        _record_completion(t_start, model, brief,
+                           "tools" if tools else "normal", "",
+                           outcome="error",
+                           request_id=request_id, remote_ip=remote_ip)
         raise HTTPException(status_code=502, detail=str(e))
 
 
