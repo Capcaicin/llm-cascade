@@ -932,7 +932,7 @@ app.add_middleware(_RateLimitMiddleware)
 
 
 @app.get("/")
-def health():
+def root():
     return {
         "status": "ok",
         "core_version": CORE_VERSION,
@@ -944,6 +944,75 @@ def health():
             "coder": FAST_CODER_MODEL,
         },
         "aliases": list(SUBAGENTS.keys()),
+    }
+
+
+# ── /health — liveness + readiness probe ─────────────────────────────────────
+# Cheap by design: short-timeout Ollama probe cached for 5s, no subagent
+# calls, no disk I/O. Docker `HEALTHCHECK`, OpenClaw supervisors, and external
+# monitors can poll this at high frequency. 200 when the router itself is up;
+# `ollama_healthy=false` surfaces a degraded state without 5xx-ing the
+# healthcheck (the router can still serve /metrics and /v1/models while
+# Ollama is restarting).
+
+_HEALTH_CACHE: dict = {"ts": 0.0, "ollama_ok": False}
+_HEALTH_TTL = 5.0
+
+
+def _probe_ollama() -> bool:
+    now = time.time()
+    if now - _HEALTH_CACHE["ts"] < _HEALTH_TTL:
+        return bool(_HEALTH_CACHE["ollama_ok"])
+    ok = False
+    try:
+        req = urllib.request.Request(f"{OLLAMA_BASE}/api/tags")
+        with urllib.request.urlopen(req, timeout=1.0) as r:
+            ok = 200 <= r.status < 300
+    except Exception:
+        ok = False
+    _HEALTH_CACHE["ts"] = now
+    _HEALTH_CACHE["ollama_ok"] = ok
+    return ok
+
+
+def _keyring_entries_present() -> int | None:
+    """Count keyring-backed secrets currently set. None if the backend is
+    unavailable (env-var fallback is still OK — that's not a failure)."""
+    try:
+        import keyring as _kr
+        from core.config import KEYRING_SERVICE as _KS, _KEYRING_ACCOUNTS as _KA
+    except Exception:
+        return None
+    count = 0
+    for account in _KA.values():
+        try:
+            if _kr.get_password(_KS, account):
+                count += 1
+        except Exception:
+            pass
+    return count
+
+
+@app.get("/health")
+def health():
+    ollama_ok = _probe_ollama()
+    keyring_count = _keyring_entries_present()
+    return {
+        "status": "ok",
+        "core_version": CORE_VERSION,
+        "uptime_seconds": round(time.time() - telemetry._START_TIME, 1),
+        "auto_refine": bool(AUTO_REFINE_ENABLED),
+        "rate_limiter": {
+            "enabled": RATE_LIMIT_PER_MIN > 0,
+            "per_minute": RATE_LIMIT_PER_MIN,
+            "tracked_ips": len(_rate_state),
+        },
+        "cors_origins": _cors_env,
+        "desktop_control_enabled": os.getenv("AI_ROUTER_DESKTOP_ENABLED") == "1",
+        "keyring_enabled": keyring_count is not None,
+        "keyring_entries": keyring_count,
+        "ollama_healthy": ollama_ok,
+        "ollama_base": OLLAMA_BASE,
     }
 
 

@@ -310,3 +310,35 @@ drop-in — the exposition format is already compatible.
 No behavior change on well-lit paths — the rendered strings are
 byte-identical to what router_server was sending before, minus the
 whitespace differences the new `.format()` templates normalize.
+
+### 2026-04-20 — Hand-off polish: /health + keyring UX + docs
+
+- `GET /health` (new): cheap liveness+readiness JSON. Fields:
+  `status`, `uptime_seconds`, `auto_refine`, `rate_limiter` (with
+  tracked_ips), `cors_origins`, `desktop_control_enabled`,
+  `keyring_enabled`, `keyring_entries`, `ollama_healthy`, `ollama_base`.
+  Ollama probe is cached for 5s so Docker healthchecks polling at 10Hz
+  don't hammer the backend. The old `/` endpoint kept as `root()` for
+  back-compat.
+- `core/keyring_helper.py`: richer docstring (per-command usage,
+  migration recipe, resolution-order note), `-h` / `--help` prints to
+  stdout with exit 0 (vs. bare-invocation usage on stderr). `list` now
+  shows the env-var that each account shadows and prints a first-run
+  hint when no entries exist; `set` does the same the first time a
+  secret lands in an empty keyring.
+- `SETUP.md`: expanded Services table (`/health`, `/metrics`,
+  `/metrics.json`), rebuilt Model Aliases table (includes every
+  subagent + two-pass alias with concrete behavior), new
+  "Security & observability" section covering keyring, auto-refine,
+  rate limiter, CORS, desktop opt-in, telemetry, and boot check, new
+  "Migration Guide — plaintext .env → OS keyring" section with a
+  copy-pasteable migration recipe, and three new troubleshooting
+  entries (private-workspace fail-closed message, `/health`
+  `ollama_healthy:false` meaning, cold-start warmup).
+- `.env.example`: reorganized into sections (Secrets / Endpoints /
+  Models / Behavior / Desktop). Every secret line now carries its
+  `keyring account:` name inline. Behavior knobs (`ROUTER_AUTO_REFINE`,
+  `ROUTER_RATE_LIMIT_PER_MIN`, `ROUTER_CORS_ORIGINS`,
+  `ROUTER_MEMORY_RECALL_COUNT`, `AI_ROUTER_DESKTOP_ENABLED`) are now
+  documented here with defaults; the example file is the discovery
+  surface for env-driven tuning.
