@@ -24,12 +24,45 @@ def _strip_api_suffix(url: str) -> str:
     return u
 
 
+# ── Secret resolution ─────────────────────────────────────────────────────────
+# Secrets are looked up from the OS keyring first (Windows Credential Manager /
+# macOS Keychain / Secret Service on Linux) and fall back to env vars. This
+# means on Windows the AnythingLLM key can live encrypted in Credential Manager
+# instead of plaintext in .env — manage it via `python -m core.keyring_helper`.
+# The env-var fallback stays so Docker and CI continue to work.
+KEYRING_SERVICE = "ai-stack"
+_KEYRING_ACCOUNTS = {
+    "ANYTHINGLLM_API_KEY": "anythingllm",
+    "BROWSER_EXT_KEY":     "browser-ext",
+    "OLLAMA_API_KEY":      "ollama",
+}
+
+
+def _get_secret(env_var: str) -> str:
+    """Keyring first, env var second. Empty string on miss.
+
+    We eat every keyring exception — missing package, locked backend, no
+    matching entry — because the env-var fallback must always be available.
+    Resolution order is fixed; do not expose a flag that lets a compromised
+    env var silently override a keyring-stored secret."""
+    account = _KEYRING_ACCOUNTS.get(env_var)
+    if account:
+        try:
+            import keyring  # local import so the module stays importable without the dep
+            val = keyring.get_password(KEYRING_SERVICE, account)
+            if val:
+                return val
+        except Exception:
+            pass
+    return os.getenv(env_var, "") or ""
+
+
 OLLAMA_BASE = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
-OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "")
+OLLAMA_API_KEY = _get_secret("OLLAMA_API_KEY")
 ANYTHINGLLM_BASE = _strip_api_suffix(os.getenv("ANYTHINGLLM_BASE_URL", "http://localhost:3001"))
-ANYTHINGLLM_KEY = os.getenv("ANYTHINGLLM_API_KEY", "")
+ANYTHINGLLM_KEY = _get_secret("ANYTHINGLLM_API_KEY")
 BROWSER_EXT_BASE = _strip_api_suffix(os.getenv("BROWSER_EXT_API", ANYTHINGLLM_BASE))
-BROWSER_EXT_KEY = os.getenv("BROWSER_EXT_KEY", "")
+BROWSER_EXT_KEY = _get_secret("BROWSER_EXT_KEY")
 
 # Primary (abliterated/uncensored) models
 DEFAULT_SMALL = os.getenv("ROUTER_SMALL_MODEL", "huihui_ai/qwen3.5-abliterated:4b")

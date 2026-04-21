@@ -30,6 +30,22 @@ function Fail($msg) { Emit @{ok=$false; error=$msg}; exit 1 }
 
 $opts = Parse-Args $Rest
 
+# ── Opt-in gate ───────────────────────────────────────────────────────────────
+# This script controls the mouse, keyboard, clipboard, and windows. That's a
+# big implicit-trust surface if the router is ever exposed off localhost. Gate
+# it behind an explicit flag so a compromised router can't invoke it silently.
+#
+# To enable: set $env:AI_ROUTER_DESKTOP_ENABLED = "1" in the session launching
+# the router, OR pass --enable to any invocation. Inspect-only commands (ping,
+# list-windows, screenshot) still require the flag — assume every action is
+# surveillance until proven otherwise.
+$desktopEnabled = ($env:AI_ROUTER_DESKTOP_ENABLED -eq "1") -or `
+                  ($opts.ContainsKey("enable")) -or `
+                  ($Command -eq "help")
+if (-not $desktopEnabled) {
+    Fail "desktop.ps1 disabled. This script controls mouse/keyboard/clipboard/windows. To enable, set AI_ROUTER_DESKTOP_ENABLED=1 in the router's environment, or pass --enable. Rationale: prevents a remote caller (OpenClaw, future webhook, compromised tool) from driving the host silently."
+}
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 

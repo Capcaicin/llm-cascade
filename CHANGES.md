@@ -180,3 +180,60 @@ costly.
   local/Docker/CLI start paths, the full alias table, a two-pass
   explainer with curl example, dashboard + Discord wiring, a
   troubleshooting matrix, one-liner reference, and the file map.
+
+### Auto-refinement + security hardening
+
+Auto two-pass refinement — the 4b sorter now emits a `needs_refinement`
+hint, and the `/v1/chat/completions` handler auto-runs a critic pass
+when it's set. Unlike `router-two-pass` (self-critic on the 35b),
+auto-refine uses `router-sub-critic` (mistral) as an **external**
+reviewer — a different model catches blind spots a self-critic misses.
+
+- `core/prompts.py`: `CLASSIFIER_SYSTEM` now asks the sorter to emit
+  `needs_refinement` (true for hard technical tasks, exploit chains,
+  threat models, multi-step code; false for chat/lookups). Derived
+  locally as a fallback when the LLM omits it:
+  `task_type in REFINE_TYPES AND complexity >= 8`.
+- `src/router_server.py`:
+  - `pick_model()` folds `needs_refinement` into the brief, honoring
+    the classifier's value and guarding against `task_type == "chat"`.
+  - `_external_critique()` runs router-sub-critic as a separate call
+    and returns the bulleted critique.
+  - `_refine_payload()` builds the rewrite turn (assistant draft +
+    user "reviewer flagged these issues" prompt), drops temperature
+    to 0.3, targets `BIG_MODEL`.
+  - `_auto_refine_eligible()` gates the branch: only when globally
+    enabled (`ROUTER_AUTO_REFINE=1` by default), sorter-flagged,
+    landed on the 35b, no tools, no tool-followup, not already
+    two-pass, and caller didn't pick a `skip_sorter` specialist.
+  - Chat handler inserts the auto-refine branch between the two-pass
+    flow and the normal stream/non-stream paths. Streaming: draft +
+    critique buffered silently, only the refined rewrite streams (like
+    `two_pass_stream`). Non-streaming: sequential, graceful fallback
+    to the draft if the critique or rewrite fails.
+
+Security hardening:
+
+- `fastapi.middleware.cors.CORSMiddleware` — whitelists localhost:8501
+  / 3000 by default; override with `ROUTER_CORS_ORIGINS=origin1,origin2`
+  or `*` (disables credentials, as required by spec).
+- `_RateLimitMiddleware` — sliding-window per-IP limiter (default 120
+  requests/min), exempt for `127.0.0.1` / `::1` / `host.docker.internal`
+  so local UIs + compose networking aren't throttled. Tune via
+  `ROUTER_RATE_LIMIT_PER_MIN` (set `0` to disable). Returns 429 with
+  `Retry-After` header.
+- `desktop.ps1` now starts with an opt-in gate. Every subcommand
+  refuses to run unless `AI_ROUTER_DESKTOP_ENABLED=1` is set OR
+  `--enable` is passed. Applies to *every* action (including read-only
+  screenshots) — treat every action as surveillance until proven
+  otherwise. Prevents a remote caller or compromised tool from driving
+  the host silently.
+- `core/config.py` + `core/keyring_helper.py` (new) — AnythingLLM /
+  browser-ext / Ollama keys now resolve from the OS keyring (Windows
+  Credential Manager / macOS Keychain / Linux Secret Service) first,
+  falling back to env vars. The CLI helper manages entries:
+  `python -m core.keyring_helper {set,get,delete,list} <account>`.
+  Accounts: `anythingllm`, `browser-ext`, `ollama`. Env-var fallback
+  preserved so Docker + CI still work.
+- `requirements.txt`: `keyring>=25.0` added.
+- `LICENSE` (new) — MIT.

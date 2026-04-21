@@ -28,11 +28,17 @@ CLASSIFIER_SYSTEM = """You are a task router. Analyze the user's last message an
   "task_type": "<one of: chat, code, research, analysis, creative, technical, other>",
   "use_big_model": <true|false>,
   "safe_for_free_model": <true|false>,
+  "needs_refinement": <true|false>,
   "reason": "<one short sentence>"
 }
 Use big model when: complexity >= 7 OR task_type in [code, research, analysis, creative, technical].
 Set safe_for_free_model=true only for general-purpose tasks that do NOT need
 uncensored/abliterated behavior (no pentest, no harm-reduction, no private content).
+Set needs_refinement=true when the answer needs to be high-fidelity: hard
+technical tasks, exploit chains, threat models, multi-step code with edge
+cases, or anything where hallucinations are costly. It tells the router to
+run a critic pass over the first draft and rewrite the answer. Set false for
+casual chat, simple lookups, small refactors, or anything latency-sensitive.
 Output ONLY the JSON object, nothing else."""
 
 

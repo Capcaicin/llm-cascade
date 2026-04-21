@@ -34,8 +34,10 @@ try:
 except Exception:
     pass
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, ConfigDict
 from typing import Any, Union
 
@@ -59,6 +61,14 @@ from core.config import (
 OPENCLAW_GATEWAY_PORT = 18789
 HEAVY_TYPES          = {"code", "research", "analysis", "creative", "technical"}
 COMPLEXITY_THRESHOLD = 6
+
+# Auto-refinement — when the 4b sorter judges a task is worth a critic pass,
+# the chat endpoint automatically runs router-sub-critic (mistral) over the
+# 35b draft, then re-runs the 35b with the critique folded in. Trades ~2x
+# latency for a tighter answer. Disable with ROUTER_AUTO_REFINE=0 in .env.
+REFINE_TYPES         = {"code", "research", "analysis", "technical"}
+REFINE_COMPLEXITY    = 8
+AUTO_REFINE_ENABLED  = os.getenv("ROUTER_AUTO_REFINE", "1").strip() not in ("0", "false", "off", "")
 
 # Clarity Engine — Tim's local Express SDK that merges raw text into a typed
 # priority tree. When the "assistant" workspace is active, the router pulls RAG
@@ -573,6 +583,80 @@ def _looks_sensitive(text: str) -> bool:
     return any(k in low for k in SENSITIVE_KEYWORDS)
 
 
+# ── Auto-refinement helpers ───────────────────────────────────────────────────
+# Separate-model critique: the router-sub-critic alias (mistral) lists issues
+# with the 35b draft as bullets. A second model catches blind spots that a
+# self-critic misses — this is the whole point vs. the built-in two_pass flow,
+# which uses the 35b for both passes.
+
+def _external_critique(query: str, draft: str) -> str:
+    """Run router-sub-critic over the draft. Returns the bulleted critique,
+    or empty string on any failure (caller falls back to the draft)."""
+    if not draft.strip():
+        return ""
+    sub = SUBAGENTS.get("router-sub-critic") or {}
+    critic_model = sub.get("model") or FAST_CRITIC_MODEL
+    persona = sub.get("system_prepend") or (
+        "You are the CRITIC. Review the draft and list concrete issues as "
+        "bullets. Do not rewrite — just critique."
+    )
+    user_msg = (
+        f"=== ORIGINAL QUERY ===\n{query}\n\n"
+        f"=== DRAFT ANSWER ===\n{draft}\n\n"
+        "List concrete issues with the draft: factual errors, missing edge "
+        "cases, hallucinated details, weak reasoning, unclear phrasing, broken "
+        "structure. Bullet points only — no preamble, no rewrite."
+    )
+    try:
+        r = _ollama_post({
+            "model": critic_model,
+            "messages": [
+                {"role": "system", "content": persona},
+                {"role": "user", "content": user_msg},
+            ],
+            "stream": False,
+            "options": sub.get("options") or {},
+        }, timeout=90)
+        return (r.get("message", {}).get("content") or "").strip()
+    except Exception:
+        return ""
+
+
+def _refine_payload(base_messages: list[dict], draft: str, critique: str,
+                    options: dict) -> dict:
+    """Build the rewrite payload: original context + draft + critique as the
+    final user turn. Temperature dropped to 0.3 to tighten the rewrite."""
+    refine_msgs = list(base_messages) + [
+        {"role": "assistant", "content": draft},
+        {"role": "user", "content": (
+            "A reviewer listed these issues with your draft:\n\n"
+            f"{critique}\n\n"
+            "Rewrite your answer addressing every issue. Keep everything the "
+            "draft got right, tighten everything it got loose. "
+            "Output only the improved answer — no meta commentary, no change log."
+        )},
+    ]
+    refined_opts = dict(options or {})
+    refined_opts["temperature"] = 0.3
+    return {"model": BIG_MODEL, "messages": refine_msgs, "options": refined_opts}
+
+
+def _auto_refine_eligible(model: str, spec: dict | None, brief: dict,
+                          tools: list | None, is_tool_followup: bool) -> bool:
+    """Only auto-refine when all of: globally enabled, sorter flagged it, we
+    landed on the 35b, the caller didn't pick a specialist alias (those opt
+    out of sorter-driven behavior), and we're not in a tools round-trip."""
+    return (
+        AUTO_REFINE_ENABLED
+        and bool(brief.get("needs_refinement"))
+        and model == BIG_MODEL
+        and not tools
+        and not is_tool_followup
+        and not (spec and spec.get("two_pass"))
+        and not (spec and spec.get("skip_sorter"))
+    )
+
+
 def pick_model(messages: list[Message], prefer_free: bool = False) -> tuple[str, dict]:
     """Run the 4b sorter, then pick a model.
 
@@ -611,6 +695,18 @@ def pick_model(messages: list[Message], prefer_free: bool = False) -> tuple[str,
         or brief.get("complexity", 0) >= COMPLEXITY_THRESHOLD
         or brief.get("task_type", "") in HEAVY_TYPES
     )
+
+    # Derive needs_refinement. Honor what the classifier emitted if present;
+    # otherwise fall back to the (task_type, complexity) rule. Never auto-refine
+    # casual chat no matter how the LLM filled the field.
+    llm_refine = brief.get("needs_refinement")
+    if isinstance(llm_refine, bool):
+        brief["needs_refinement"] = llm_refine and brief.get("task_type", "") != "chat"
+    else:
+        brief["needs_refinement"] = (
+            brief.get("task_type", "") in REFINE_TYPES
+            and brief.get("complexity", 0) >= REFINE_COMPLEXITY
+        )
 
     if use_big:
         return BIG_MODEL, brief
@@ -670,6 +766,74 @@ def _make_response(content: str, model: str, tool_calls: list | None = None) -> 
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Two-Tier Router", version="1.1.0")
+
+
+# CORS — default to common local UIs (Streamlit, Vite). Override with a
+# comma-separated ROUTER_CORS_ORIGINS env var, or "*" to allow any origin
+# (only safe when the router is strictly localhost-bound — don't ever do this
+# on a network-exposed deployment).
+_cors_env = os.getenv(
+    "ROUTER_CORS_ORIGINS",
+    "http://localhost:8501,http://127.0.0.1:8501,"
+    "http://localhost:3000,http://127.0.0.1:3000",
+).strip()
+if _cors_env == "*":
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,  # credentials + wildcard is disallowed by spec
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
+    )
+else:
+    _cors_origins = [o.strip() for o in _cors_env.split(",") if o.strip()]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
+    )
+
+
+# Rate limiter — simple sliding-window per-remote-IP. Local callers
+# (127.0.0.1 / ::1 / host.docker.internal) are exempt so the dashboard,
+# OpenClaw, and compose networking don't trip the limit. Tune with
+# ROUTER_RATE_LIMIT_PER_MIN (set to 0 to disable entirely).
+RATE_LIMIT_PER_MIN = int(os.getenv("ROUTER_RATE_LIMIT_PER_MIN", "120"))
+_LOCAL_IPS = {"127.0.0.1", "::1", "localhost", "host.docker.internal"}
+_rate_state: dict[str, list[float]] = {}
+_rate_lock = threading.Lock()
+
+
+class _RateLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if RATE_LIMIT_PER_MIN > 0:
+            ip = (request.client.host if request.client else "") or ""
+            if ip and ip not in _LOCAL_IPS:
+                now = time.time()
+                window_start = now - 60.0
+                with _rate_lock:
+                    q = _rate_state.setdefault(ip, [])
+                    # Drop stamps older than 60s — bounded cost per request.
+                    while q and q[0] < window_start:
+                        q.pop(0)
+                    if len(q) >= RATE_LIMIT_PER_MIN:
+                        retry_after = max(1, int(q[0] + 60.0 - now))
+                        return JSONResponse(
+                            {
+                                "error": "rate_limited",
+                                "limit_per_min": RATE_LIMIT_PER_MIN,
+                                "retry_after_seconds": retry_after,
+                            },
+                            status_code=429,
+                            headers={"Retry-After": str(retry_after)},
+                        )
+                    q.append(now)
+        return await call_next(request)
+
+
+app.add_middleware(_RateLimitMiddleware)
 
 
 @app.get("/")
@@ -839,6 +1003,77 @@ def chat(req: ChatRequest):
         if should_remember and final:
             remember_async(last_user_text, final)
         return JSONResponse(_make_response(final, model))
+
+    # ── Auto-refinement ──────────────────────────────────────────────────────
+    # Sorter flagged this as a task worth a critic pass. Flow:
+    #   1) 35b produces the draft
+    #   2) router-sub-critic (mistral) lists issues
+    #   3) 35b rewrites addressing those issues
+    # Streaming clients trade time-to-first-token for a tighter answer: the
+    # draft + critique are buffered, only the final rewrite streams. Explicit
+    # subagent aliases (skip_sorter) are exempted.
+    if _auto_refine_eligible(model, spec, brief, tools, is_tool_followup):
+        if req.stream:
+            def refine_event_stream():
+                collected: list[str] = []
+                yield _make_chunk("", model)
+                # Pass 1 — buffer the draft in-memory (no streaming to client).
+                draft_payload = dict(payload)
+                draft_payload["stream"] = False
+                try:
+                    draft_result = _ollama_post(draft_payload, timeout=240)
+                    draft = (draft_result.get("message", {}).get("content") or "").strip()
+                except Exception:
+                    draft = ""
+                if not draft:
+                    yield _make_chunk("", model, finish=True)
+                    yield "data: [DONE]\n\n"
+                    return
+                critique = _external_critique(last_user_text, draft)
+                if not critique:
+                    # Critic pass failed — stream the draft verbatim so the
+                    # user still gets a response.
+                    collected.append(draft)
+                    yield _make_chunk(draft, model)
+                    yield _make_chunk("", model, finish=True)
+                    yield "data: [DONE]\n\n"
+                    if should_remember:
+                        remember_async(last_user_text, draft)
+                    return
+                refine_pl = _refine_payload(ollama_msgs, draft, critique, options)
+                for delta in _ollama_stream(refine_pl):
+                    collected.append(delta)
+                    yield _make_chunk(delta, model)
+                yield _make_chunk("", model, finish=True)
+                yield "data: [DONE]\n\n"
+                final_text = "".join(collected).strip() or draft
+                if should_remember:
+                    remember_async(last_user_text, final_text)
+            return StreamingResponse(refine_event_stream(), media_type="text/event-stream")
+
+        # Non-streaming auto-refine
+        try:
+            draft_payload = dict(payload)
+            draft_payload["stream"] = False
+            draft_result = _ollama_post(draft_payload, timeout=240)
+            draft = (draft_result.get("message", {}).get("content") or "").strip()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        critique = _external_critique(last_user_text, draft)
+        if not critique or not draft:
+            if should_remember and draft:
+                remember_async(last_user_text, draft)
+            return JSONResponse(_make_response(draft, model))
+        try:
+            refine_pl = _refine_payload(ollama_msgs, draft, critique, options)
+            refine_pl["stream"] = False
+            refined_result = _ollama_post(refine_pl, timeout=240)
+            refined = (refined_result.get("message", {}).get("content") or "").strip() or draft
+        except Exception:
+            refined = draft
+        if should_remember:
+            remember_async(last_user_text, refined)
+        return JSONResponse(_make_response(refined, model))
 
     if req.stream and not tools:
         def event_stream():
