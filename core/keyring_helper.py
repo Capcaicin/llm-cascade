@@ -6,9 +6,10 @@ plaintext .env file for day-to-day use. The env var still works as a fallback
 for Docker / CI where a keyring backend isn't available.
 
 Accounts:
-  anythingllm   — maps to ANYTHINGLLM_API_KEY
-  browser-ext   — maps to BROWSER_EXT_KEY
-  ollama        — maps to OLLAMA_API_KEY
+  anythingllm       — maps to ANYTHINGLLM_API_KEY
+  browser-ext       — maps to BROWSER_EXT_KEY
+  ollama            — maps to OLLAMA_API_KEY
+  private-password  — maps to PRIVATE_PASSWORD (dashboard private-workspace gate)
 
 Usage:
   python -m core.keyring_helper set anythingllm                     # prompts

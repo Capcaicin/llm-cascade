@@ -25,7 +25,7 @@ from core import __version__ as CORE_VERSION
 from core.config import (
     OLLAMA_BASE, ANYTHINGLLM_BASE, ANYTHINGLLM_KEY,
     DEFAULT_SMALL, DEFAULT_BIG, RAG_LIMIT, RAG_MAX_CHARS,
-    ROUTER_SERVER_URL,
+    ROUTER_SERVER_URL, PRIVATE_PASSWORD_HASH,
 )
 from core.auth import _auth_anything, _auth_browser, _auth_ollama
 from core.http import _post, _get, _ollama_stream, _alm_request
@@ -37,7 +37,6 @@ from core.prompts import (
 
 SMALL_MODEL = DEFAULT_SMALL
 BIG_MODEL = DEFAULT_BIG
-PRIVATE_HASH = hashlib.sha256("Tlbyr123".encode()).hexdigest()
 
 WORKSPACES = {
     "Assistant":    {"slug": "assistant",    "icon": "🤖", "color": "#4f8ef7"},
@@ -528,21 +527,26 @@ def main():
     """, unsafe_allow_html=True)
 
     # ── Private gate ─────────────────────────────────────────────────────────
+    # Fail-closed: if PRIVATE_PASSWORD_HASH is None (no password configured via
+    # keyring or env) the workspace stays locked and every unlock attempt is
+    # rejected. Set with: python -m core.keyring_helper set private-password
     if ws_cfg.get("locked") and not st.session_state.private_unlocked:
-        st.markdown("""
+        configured = PRIVATE_PASSWORD_HASH is not None
+        st.markdown(f"""
         <div class="lock-gate">
             <div class="lock-icon">🔒</div>
             <p style="color:#8b949e; font-size:0.9rem; margin-bottom:20px;">
-                This workspace is password protected.
+                {"This workspace is password protected." if configured
+                 else "This workspace is locked. No password is configured — set <code>PRIVATE_PASSWORD</code> (env) or run <code>python -m core.keyring_helper set private-password</code>."}
             </p>
         </div>
         """, unsafe_allow_html=True)
         col = st.columns([1, 2, 1])[1]
         with col:
             pw = st.text_input("Password", type="password", label_visibility="collapsed",
-                               placeholder="Enter password...")
-            if st.button("Unlock", type="primary", use_container_width=True):
-                if hashlib.sha256(pw.encode()).hexdigest() == PRIVATE_HASH:
+                               placeholder="Enter password...", disabled=not configured)
+            if st.button("Unlock", type="primary", use_container_width=True, disabled=not configured):
+                if configured and hashlib.sha256(pw.encode()).hexdigest() == PRIVATE_PASSWORD_HASH:
                     st.session_state.private_unlocked = True
                     st.rerun()
                 else:

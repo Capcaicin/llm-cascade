@@ -75,7 +75,7 @@ All 10 live in AnythingLLM with seeded context:
 | Substances | `substances` | — |
 | Journal | `journal` | — |
 | Ideas | `ideas` | — |
-| Private | `private` | **Tlbyr123** |
+| Private | `private` | env `PRIVATE_PASSWORD` or keyring `private-password` (fail-closed if unset) |
 
 ---
 

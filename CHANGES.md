@@ -237,3 +237,27 @@ Security hardening:
   preserved so Docker + CI still work.
 - `requirements.txt`: `keyring>=25.0` added.
 - `LICENSE` (new) — MIT.
+
+### 2026-04-20 — Private workspace: remove hardcoded password
+
+- `src/dashboard.py`: removed the literal `Tlbyr123` SHA-256 embedded at
+  module import time. The unlock path now compares against
+  `core.config.PRIVATE_PASSWORD_HASH` (sha256 of `PRIVATE_PASSWORD` env
+  or keyring account `private-password`, resolved at import). If no
+  password is configured, `PRIVATE_PASSWORD_HASH` is `None` and the
+  workspace is **fail-closed**: the input and button are disabled and
+  every unlock attempt is rejected. The lock screen copy explains how
+  to set it.
+- `core/config.py`: `PRIVATE_PASSWORD` added to `_KEYRING_ACCOUNTS`
+  (account: `private-password`). Hash computed once at import — the
+  raw password never lingers in module state.
+- `src/ai_router_v2.py`, `SETUP.md`: scrubbed the literal
+  `Tlbyr123` from the `/projects` CLI listing and the workspace table
+  — both now point at `PRIVATE_PASSWORD` / `private-password`.
+- `.env.example`: comment rewritten to reflect fail-closed semantics
+  and recommend the keyring over the file.
+- `core/keyring_helper.py`: docstring lists the `private-password`
+  account alongside `anythingllm`, `browser-ext`, `ollama`.
+
+The secret must still be rotated in the AnythingLLM workspace itself —
+changing the hash here only re-locks the dashboard gate.

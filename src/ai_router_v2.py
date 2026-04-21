@@ -458,7 +458,7 @@ class Router:
                 ("substances",   "Substances",       "harm reduction reference"),
                 ("journal",      "Journal",          "reflection + personal writing"),
                 ("ideas",        "Ideas",            "idea capture + evaluation"),
-                ("private",      "Private",          "password-gated (Tlbyr123)"),
+                ("private",      "Private",          "password-gated (PRIVATE_PASSWORD env / keyring)"),
             ]
             print()
             for slug, name, desc in projects:

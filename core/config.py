@@ -35,6 +35,7 @@ _KEYRING_ACCOUNTS = {
     "ANYTHINGLLM_API_KEY": "anythingllm",
     "BROWSER_EXT_KEY":     "browser-ext",
     "OLLAMA_API_KEY":      "ollama",
+    "PRIVATE_PASSWORD":    "private-password",
 }
 
 
@@ -63,6 +64,16 @@ ANYTHINGLLM_BASE = _strip_api_suffix(os.getenv("ANYTHINGLLM_BASE_URL", "http://l
 ANYTHINGLLM_KEY = _get_secret("ANYTHINGLLM_API_KEY")
 BROWSER_EXT_BASE = _strip_api_suffix(os.getenv("BROWSER_EXT_API", ANYTHINGLLM_BASE))
 BROWSER_EXT_KEY = _get_secret("BROWSER_EXT_KEY")
+
+# Private workspace gate. Resolve to a sha256 hex digest at import time; a
+# missing secret yields None, and the dashboard must treat None as fail-closed
+# (every unlock attempt rejected). Do NOT persist or log the raw password.
+import hashlib as _hashlib
+_private_pw = _get_secret("PRIVATE_PASSWORD")
+PRIVATE_PASSWORD_HASH: str | None = (
+    _hashlib.sha256(_private_pw.encode("utf-8")).hexdigest() if _private_pw else None
+)
+del _private_pw
 
 # Primary (abliterated/uncensored) models
 DEFAULT_SMALL = os.getenv("ROUTER_SMALL_MODEL", "huihui_ai/qwen3.5-abliterated:4b")
