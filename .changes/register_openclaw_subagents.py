@@ -30,6 +30,11 @@ SUBAGENT_ALIASES = {
     "router-sub-draft":   "fast first-pass drafter (llama3.1:8b)",
     "router-sub-critic":  "reviewer (mistral:latest)",
     "router-sub-research": "research synthesizer (35b + cross-workspace RAG)",
+    # Two-pass draft + critic-refine aliases. Cloud variants
+    # (claude-*, gpt-*) are NOT registered here — they currently fall through
+    # to the local 35b and advertising them would mislead callers.
+    "router-two-pass":            "two-pass: 35b draft + critic refine (higher quality)",
+    "router-two-pass-uncensored": "two-pass + red-team prepend (authorized pentest)",
 }
 
 # Keys that must never appear inside agents.defaults.model (schema allows only

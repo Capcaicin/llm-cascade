@@ -364,7 +364,7 @@ def ensure_services():
                    _c(GREEN, "✔  clean") if not extra else _c(RED, "✘  extra keys: " + ", ".join(extra)),
                    "agents.defaults.model must be {primary, fallbacks} only")
         _print_row("  • subagent aliases",
-                   _c(GREEN, f"✔  {registered_subs}/7 registered") if registered_subs >= 7 else _c(YELLOW, f"⚠  {registered_subs}/7"),
+                   _c(GREEN, f"✔  {registered_subs}/9 registered") if registered_subs >= 9 else _c(YELLOW, f"⚠  {registered_subs}/9"),
                    "run: python .changes/register_openclaw_subagents.py")
     except FileNotFoundError:
         print(_c(YELLOW, "  OpenClaw config: not found (~/.openclaw/openclaw.json)"))
@@ -397,6 +397,61 @@ def ensure_services():
     _print_row("  • router-two-pass-uncensored",_c(GREEN, "2-pass+RT"), "draft + critic + red-team prepend (pentest)")
     _print_row(f"  • {SMALL_MODEL}", _c(DIM, "direct"), "raw 4b")
     _print_row(f"  • {BIG_MODEL}",   _c(DIM, "direct"), "raw 35b")
+
+    # ── Security & refinement panel ──────────────────────────────────────────
+    # Surfaces the env-driven knobs so the operator sees at boot what's active
+    # and what isn't. Everything here was silent before, which made it easy to
+    # accidentally ship in a weaker posture than intended.
+    print()
+    print(_c(DIM, "  Security & refinement:"))
+
+    # Auto-refine
+    _print_row("  • auto-refine",
+               _c(GREEN, "✔  on") if AUTO_REFINE_ENABLED else _c(YELLOW, "⚠  off"),
+               f"critic pass when sorter flags it (ROUTER_AUTO_REFINE={'1' if AUTO_REFINE_ENABLED else '0'})")
+
+    # CORS
+    cors_shown = _cors_env if len(_cors_env) <= 60 else _cors_env[:57] + "…"
+    _print_row("  • CORS origins",
+               _c(GREEN, "✔  " + cors_shown),
+               "ROUTER_CORS_ORIGINS (comma-separated, or *)")
+
+    # Rate limit
+    if RATE_LIMIT_PER_MIN > 0:
+        _print_row("  • rate limit",
+                   _c(GREEN, f"✔  {RATE_LIMIT_PER_MIN}/min per IP"),
+                   "local addresses exempt (ROUTER_RATE_LIMIT_PER_MIN, 0=off)")
+    else:
+        _print_row("  • rate limit", _c(YELLOW, "⚠  disabled"),
+                   "ROUTER_RATE_LIMIT_PER_MIN=0")
+
+    # Desktop opt-in
+    desktop_on = os.getenv("AI_ROUTER_DESKTOP_ENABLED") == "1"
+    _print_row("  • desktop control",
+               _c(GREEN, "✔  enabled") if desktop_on else _c(DIM, "–  locked (opt-in)"),
+               "AI_ROUTER_DESKTOP_ENABLED=1 to unlock desktop.ps1")
+
+    # Keyring presence — best-effort; never blocks boot if keyring missing.
+    try:
+        import keyring as _kr
+        from core.config import KEYRING_SERVICE as _KS, _KEYRING_ACCOUNTS as _KA
+        present = []
+        for env_name, account in _KA.items():
+            try:
+                if _kr.get_password(_KS, account):
+                    present.append(account)
+            except Exception:
+                pass
+        if present:
+            _print_row("  • keyring",
+                       _c(GREEN, f"✔  {len(present)}/{len(_KA)} stored"),
+                       ", ".join(present))
+        else:
+            _print_row("  • keyring", _c(DIM, "–  empty"),
+                       "python -m core.keyring_helper set <account>")
+    except Exception:
+        _print_row("  • keyring", _c(DIM, "–  unavailable"),
+                   "pip install keyring  (env vars still work)")
 
     # Quick manual — cheat sheet of one-liners for the most common actions
     print()
